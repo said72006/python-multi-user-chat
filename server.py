@@ -11,6 +11,8 @@ import threading
 
 MAX_LINE = 4096
 MAX_MESSAGE = 1000
+MAX_CONNECTIONS = 32
+HANDSHAKE_TIMEOUT = 10
 
 
 def is_loopback(host):
@@ -65,6 +67,7 @@ class ChatServer:
             self.context.load_cert_chain(certificate, key)
         self.peers = {}
         self.lock = threading.Lock()
+        self.connection_slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
         self.running = threading.Event()
         self.listener = None
 
@@ -91,7 +94,7 @@ class ChatServer:
     def handle(self, conn):
         peer = Peer(conn)
         try:
-            conn.settimeout(120)
+            conn.settimeout(HANDSHAKE_TIMEOUT)
             with conn.makefile("r", encoding="utf-8", newline="\n") as reader:
                 hello = receive_json(reader)
                 if hello is None or hello.get("type") != "hello":
@@ -104,13 +107,17 @@ class ChatServer:
                 if self.token and not hmac.compare_digest(str(hello.get("token", "")), self.token):
                     peer.send({"type": "error", "text": "Authentication failed"})
                     return
+                # Reserve the nickname atomically, without performing network I/O
+                # while holding the shared lock.
                 with self.lock:
-                    if any(p.nickname == nickname for p in self.peers.values()):
-                        peer.send({"type": "error", "text": "Nickname already taken"})
-                        return
-                    peer.nickname = nickname
-                    peer.send({"type": "welcome", "text": "Connected as " + nickname})
-                    self.peers[conn] = peer
+                    name_taken = any(p.nickname == nickname for p in self.peers.values())
+                    if not name_taken:
+                        peer.nickname = nickname
+                        self.peers[conn] = peer
+                if name_taken:
+                    peer.send({"type": "error", "text": "Nickname already taken"})
+                    return
+                peer.send({"type": "welcome", "text": "Connected as " + nickname})
                 conn.settimeout(None)
                 self.broadcast({"type": "notice", "text": nickname + " joined the chat"}, peer)
                 while True:
@@ -130,6 +137,19 @@ class ChatServer:
         finally:
             self.disconnect(peer)
 
+    def serve_connection(self, conn):
+        # TLS handshakes occur in bounded worker threads, not in the accept
+        # loop. A stalled handshake cannot block every other new connection.
+        try:
+            conn.settimeout(HANDSHAKE_TIMEOUT)
+            if self.context is not None:
+                conn = self.context.wrap_socket(conn, server_side=True)
+            self.handle(conn)
+        except (OSError, ssl.SSLError, ValueError):
+            conn.close()
+        finally:
+            self.connection_slots.release()
+
     def serve_forever(self):
         family = socket.AF_INET6 if ":" in self.host else socket.AF_INET
         with socket.socket(family, socket.SOCK_STREAM) as listener:
@@ -148,13 +168,16 @@ class ChatServer:
                         continue
                     except OSError:
                         break
-                    if self.context:
-                        try:
-                            conn = self.context.wrap_socket(conn, server_side=True)
-                        except ssl.SSLError:
-                            conn.close()
-                            continue
-                    threading.Thread(target=self.handle, args=(conn,), daemon=True).start()
+                    if not self.connection_slots.acquire(blocking=False):
+                        # Reject excess pending/active clients instead of
+                        # allocating unlimited worker threads.
+                        conn.close()
+                        continue
+                    threading.Thread(
+                        target=self.serve_connection,
+                        args=(conn,),
+                        daemon=True
+                    ).start()
             finally:
                 self.running.clear()
 

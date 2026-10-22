@@ -1,162 +1,89 @@
-"""
-Client program for TCP chat application.
-"""
-
+"""CLI client for the line-delimited JSON chat protocol (Python 3.10+)."""
+import argparse
+import json
+import os
 import socket
+import ssl
 import threading
 
-
-HOST = "127.0.0.1"
-PORT = 5000
+from server import MAX_LINE, receive_json, valid_nickname
 
 
-
-# Create TCP socket
-client_socket = socket.socket(
-    socket.AF_INET,
-    socket.SOCK_STREAM
-)
-
-
-
-try:
-
-    # Connect to server
-    client_socket.connect(
-        (HOST, PORT)
-    )
-
-    print("Connected to server")
-
-
-except Exception as e:
-
-    print("Connection error:", e)
-
-    exit()
-
-
-
-# Choose unique nickname
-
-while True:
-
-    nickname = input("Enter your name: ")
-
-
-    client_socket.send(
-        nickname.encode()
-    )
-
-
-    response = (
-        client_socket.recv(1024)
-        .decode()
-    )
-
-
-    if response == "NAME_TAKEN":
-
-        print("Name already exists, try another one")
-
-
-    else:
-
-        break
-
-
-
-
-
-def receive():
-    """
-    Receive messages from server.
-    Runs in a separate thread.
-    """
-
-    while True:
-
-        try:
-
-            message = client_socket.recv(1024)
-
-
-            if not message:
-
-                print("Server disconnected")
-
-                break
-
-
-
-            print(
-                "\n" + message.decode()
-            )
-
-
-
-        except Exception as e:
-
-            print(
-                "Receive error:",
-                e
-            )
-
-            break
-
-
-
-
-
-# Thread for receiving messages
-
-receive_thread = threading.Thread(
-    target=receive,
-    daemon=True
-)
-
-
-receive_thread.start()
-
-
-
-
-
-# Sending messages
-
-while True:
-
+def main():
+    parser = argparse.ArgumentParser(description="Multi-user chat client")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=5000)
+    parser.add_argument("--tls", action="store_true", help="Verify TLS server certificate")
+    parser.add_argument("--ca-file", help="CA or server certificate PEM for TLS")
+    args = parser.parse_args()
+    from server import is_loopback
+    if not is_loopback(args.host) and not args.tls:
+        parser.error("Remote connections require --tls and a trusted certificate")
+    if args.ca_file and not args.tls:
+        parser.error("--ca-file requires --tls")
+    nickname = input("Nickname (letters/digits/_/-, max 24): ").strip()
+    if not valid_nickname(nickname):
+        parser.error("Invalid nickname")
+    conn = socket.create_connection((args.host, args.port), timeout=10)
     try:
+        if args.tls:
+            context = ssl.create_default_context(cafile=args.ca_file)
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
+            conn = context.wrap_socket(conn, server_hostname=args.host)
+        with conn:
+            with conn.makefile("r", encoding="utf-8", newline="\n") as reader:
+                hello = {"type": "hello", "nickname": nickname,
+                         "token": os.getenv("CHAT_SHARED_TOKEN", "")}
+                conn.sendall((json.dumps(hello) + "\n").encode("utf-8"))
+                response = receive_json(reader)
+                if not response or response.get("type") != "welcome":
+                    print(response.get("text", "Server disconnected") if response else "Server disconnected")
+                    return
+                print(response["text"])
+                finished = threading.Event()
 
-        message = input("You: ")
+                def receive():
+                    try:
+                        while not finished.is_set():
+                            item = receive_json(reader)
+                            if item is None:
+                                break
+                            if item.get("type") == "chat":
+                                print(f"\n{item.get('from', '?')}: {item.get('text', '')}")
+                            else:
+                                print("\n" + str(item.get("text", "")))
+                    except (OSError, ValueError, UnicodeError, json.JSONDecodeError):
+                        pass
+                    finally:
+                        finished.set()
+                        print("\nDisconnected")
+
+                threading.Thread(target=receive, daemon=True).start()
+                try:
+                    while not finished.is_set():
+                        message = input("You (/quit to exit): ")
+                        if message == "/quit":
+                            break
+                        message = message.strip()
+                        if not message or len(message) > 1000:
+                            print("Message must be 1-1000 characters")
+                            continue
+                        payload = (json.dumps({"type": "chat", "text": message}, ensure_ascii=False) + "\n").encode("utf-8")
+                        if len(payload) > MAX_LINE:
+                            print("Message is too long")
+                            continue
+                        conn.sendall(payload)
+                except (EOFError, KeyboardInterrupt, BrokenPipeError, ConnectionError):
+                    pass
+                finally:
+                    finished.set()
+                    try:
+                        conn.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+    except (OSError, ssl.SSLError, ValueError) as exc:
+        print("Connection failed:", exc)
 
 
-        if message.lower() == "exit":
-
-            print("Leaving chat...")
-
-            break
-
-
-
-        client_socket.send(
-            message.encode()
-        )
-
-
-
-    except Exception as e:
-
-        print(
-            "Send error:",
-            e
-        )
-
-        break
-
-
-
-
-# Close connection
-
-client_socket.close()
+if __name__ == "__main__":
+    main()

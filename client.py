@@ -24,8 +24,9 @@ def main():
     nickname = input("Nickname (letters/digits/_/-, max 24): ").strip()
     if not valid_nickname(nickname):
         parser.error("Invalid nickname")
-    conn = socket.create_connection((args.host, args.port), timeout=10)
+    conn = None
     try:
+        conn = socket.create_connection((args.host, args.port), timeout=10)
         if args.tls:
             context = ssl.create_default_context(cafile=args.ca_file)
             context.minimum_version = ssl.TLSVersion.TLSv1_2
@@ -83,6 +84,9 @@ def main():
                         pass
     except (OSError, ssl.SSLError, ValueError) as exc:
         print("Connection failed:", exc)
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 if __name__ == "__main__":

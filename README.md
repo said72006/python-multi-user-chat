@@ -1,171 +1,59 @@
-# Multi-User Chat Application
+# Multi-User Chat (Python)
 
-## Project Overview
+A **local-first** TCP chat for learning sockets and threading. Messages use newline-delimited JSON, not raw TCP reads, so messages remain framed even if packets split or coalesce.
 
-This project is a TCP-based multi-user chat application developed using Python 3
-The application follows a client-server architecture where multiple clients can
-connect to a centralized server and exchange messages in real time.
+## Features
+- Thread-safe nickname registration, concurrent clients, chat broadcast, join/leave notices.
+- Length and input validation, graceful disconnections and explicit protocol errors.
+- Local-only by default (127.0.0.1:5000).
+- **TLS certificate + shared token mandatory when listening on a non-loopback interface.**
+- Python standard library only; automated tests in GitHub Actions.
 
-The project uses Python built-in networking libraries:
-- socket
-- threading
-
-No third-party networking frameworks were used.
-
----
-
-## Project Structure
-```text
-Chat_Project/
-│── server.py
-│── client.py
-│── README.md
-│
-└── images/
-    │── server_running.png
-    │── multiple_clients.png
-    │── chat.png
-    │── disconnect.png
-```
-
-### server.py
-
-Responsible for:
-- Creating and managing the TCP server socket.
-- Accepting multiple client connections.
-- Managing connected users.
-- Broadcasting messages between clients.
-- Handling client disconnections.
-
-### client.py
-
-Responsible for:
-- Connecting to the server.
-- Sending user messages.
-- Receiving messages from other clients.
-- Providing a command-line interface for interaction.
-
----
-
-## Requirements
-
-- Python 3.x installed.
-- No external libraries are required.
-
-Required built-in libraries:
-- socket
-- threading
-
----
-
-## How to Run the Project
-
-## 1. Start the Server
-
-Open a terminal inside the project folder and run:
+## Quick start (same computer)
 
 ```bash
 python server.py
-```
-
-The server will start listening for client connections.
-
-Example output:
-
-```text
-Server is running...
-```
-
-## 2. Start the Clients
-
-Open another terminal and run:
-
-```bash
+# In each of two other terminals:
 python client.py
 ```
 
-Enter a unique nickname.
+Enter different nicknames. Type `/quit` to exit. This setup binds to localhost, so other machines cannot connect.
 
-Multiple clients can connect by running `client.py` several times.
+## Remote/LAN mode (requires certificate and authentication)
 
-## Features
+Make a TLS certificate with a subject alternative name (SAN) matching the **hostname** clients use. For a private lab, use a locally trusted certificate authority; do not disable certificate validation.
 
-The application provides:
+On the server, export a long random secret through the environment (**never commit it**) and start:
 
-TCP socket communication.
+```bash
+export CHAT_SHARED_TOKEN='replace-with-a-unique-long-random-secret'
+python server.py --host 0.0.0.0 --port 5000 --cert server.pem --key server-key.pem
+```
 
-Multiple simultaneous clients.
+On each authorized client, set the same token in the environment, trust the certificate authority, and connect:
 
-Thread-based client handling.
+```bash
+export CHAT_SHARED_TOKEN='replace-with-the-same-secret'
+python client.py --host chat.example.test --tls --ca-file ca.pem
+```
 
-Unique nickname verification.
+**Security limits:** A shared token identifies the group, **not individual users**; all authenticated users can impersonate any unoccupied nickname. There is no message history or end-to-end encryption. Do not deploy as a public production chat service without per-user identity, abuse protections, and proper operations.
 
-Real-time message broadcasting.
+## Protocol
+Each line is a JSON object. First send `{"type":"hello","nickname":"alice","token":"..."}`; the server replies with `welcome` or `error`. Then send `{"type":"chat","text":"Hello"}`. Incoming events are `chat`, `notice`, or `error`. Maximum inbound line length: 4096 characters, maximum message text length: 1000 characters. Nicknames: 1–24 ASCII letters, numbers, underscores or dashes.
 
-Join and leave notifications.
+## Tests
 
-Exception handling for network errors.
+```bash
+python -m unittest discover -s tests -v
+```
 
-Command Line Interface (CLI).
+The tests check framing, nickname validation, remote-mode restrictions, authentication, and message relay.
 
-## TCP Protocol Justification
+## Project files
+- `server.py` — threaded TCP/TLS server and protocol.
+- `client.py` — interactive client.
+- `tests/test_chat.py` — unit and integration tests.
+- `images/` — original screenshots.
 
-TCP was selected as the transport layer protocol for this chat application because
-the system requires reliable and ordered communication.
-
-TCP provides:
-
-Reliable message delivery.
-
-Correct message ordering.
-
-Connection-oriented communication.
-
-Error detection and recovery.
-
-UDP was not selected because it does not guarantee message delivery or message order.
-In a chat application, losing messages or receiving them in the wrong order would
-negatively affect communication quality.
-
-## Screenshots
-
-The following screenshots demonstrate the application functionality:
-
-Server running and accepting client connections.
-
-![Server Running](images/server_running.png)
-
-
-Multiple clients connected to the server.
-
-![Multiple Clients](images/multiple_clients.png)
-
-
-Real-time message exchange between users.
-
-![Chat Communication](images/chat.png)
-
-
-Handling client disconnection.
-
-![Client Disconnect](images/disconnect.png)
-
-## Error Handling
-
-The application handles different network problems, including:
-
-Unexpected client disconnections.
-
-Sending and receiving errors.
-
-Server setup errors.
-
-Port binding conflicts.
-
-The server continues operating even if one client disconnects unexpectedly.
-
-## Conclusion
-
-This project demonstrates the implementation of a TCP-based multi-user chat application using Python.
-
-The application successfully applies client-server architecture, TCP communication, socket programming, and multithreading to support real-time communication between multiple users.
+**Note:** This is an educational project; adding TLS protects communication in transit but does not turn it into a production-ready messaging service.

@@ -5,7 +5,7 @@ import threading
 import time
 import unittest
 
-from server import ChatServer, is_loopback, receive_json, valid_nickname
+from server import ChatServer, HANDSHAKE_TIMEOUT, MAX_CONNECTIONS, is_loopback, receive_json, valid_nickname
 
 
 class ChatTests(unittest.TestCase):
@@ -19,6 +19,10 @@ class ChatTests(unittest.TestCase):
             ChatServer(host="0.0.0.0")
         self.assertTrue(is_loopback("127.0.0.1"))
         self.assertFalse(is_loopback("0.0.0.0"))
+
+    def test_worker_limits_configured(self):
+        self.assertGreater(MAX_CONNECTIONS, 0)
+        self.assertLessEqual(HANDSHAKE_TIMEOUT, 15)
 
     def test_framing(self):
         left, right = socket.socketpair()
@@ -59,8 +63,12 @@ class ChatTests(unittest.TestCase):
             _, bob_reader, welcome = connect("bob", "a-demo-test-token")
             self.assertEqual(welcome["type"], "welcome")
             self.assertEqual(receive_json(alice_reader)["type"], "notice")
-            alice.sendall(b'{"type":"chat","text":"hello"}\n')
+            # Two lines in one write must remain two independent messages.
+            alice.sendall(b'{"type":"chat","text":"hello"}\n{"type":"chat","text":"world"}\n')
             self.assertEqual(receive_json(bob_reader)["text"], "hello")
+            self.assertEqual(receive_json(bob_reader)["text"], "world")
+            _, _, duplicate = connect("alice", "a-demo-test-token")
+            self.assertEqual(duplicate["type"], "error")
         finally:
             for reader in readers:
                 try: reader.close()

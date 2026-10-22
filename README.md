@@ -5,6 +5,7 @@ A **local-first** TCP chat for learning sockets and threading. Messages use newl
 ## Features
 - Thread-safe nickname registration, concurrent clients, chat broadcast, join/leave notices.
 - Length and input validation, graceful disconnections and explicit protocol errors.
+- Up to 32 concurrent or pending connections with a 10-second authentication/TLS handshake timeout.
 - Local-only by default (127.0.0.1:5000).
 - **TLS certificate + shared token mandatory when listening on a non-loopback interface.**
 - Python standard library only; automated tests in GitHub Actions.
@@ -37,7 +38,7 @@ export CHAT_SHARED_TOKEN='replace-with-the-same-secret'
 python client.py --host chat.example.test --tls --ca-file ca.pem
 ```
 
-**Security limits:** A shared token identifies the group, **not individual users**; all authenticated users can impersonate any unoccupied nickname. There is no message history or end-to-end encryption. Do not deploy as a public production chat service without per-user identity, abuse protections, and proper operations.
+**Security limits:** A shared token identifies the group, **not individual users**; all authenticated users can impersonate any unoccupied nickname. There is no message history or end-to-end encryption. The 32-connection cap is basic resource protection, not a denial-of-service guarantee. Do not deploy as a public production chat service without per-user identity, abuse protections, and proper operations.
 
 ## Protocol
 Each line is a JSON object. First send `{"type":"hello","nickname":"alice","token":"..."}`; the server replies with `welcome` or `error`. Then send `{"type":"chat","text":"Hello"}`. Incoming events are `chat`, `notice`, or `error`. Maximum inbound line length: 4096 characters, maximum message text length: 1000 characters. Nicknames: 1–24 ASCII letters, numbers, underscores or dashes.
